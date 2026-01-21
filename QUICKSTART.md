@@ -13,7 +13,7 @@ poetry run medical-sorter /path/to/docs --model "google/gemini-2.0-flash-exp:fre
 # Skip confirmation
 poetry run medical-sorter /path/to/documents --yes
 
-poetry run medical-sorter /Users/jatinbansal/Documents/test-medical-docs/ --model "google/gemma-3-27b-it:free"
+poetry run medical-sorter /Users/jatinbansal/Documents/test-medical-docs/ --model "google/gemma-3-27b-it:free" --debug
 ```
 
 ## Vision-Capable Models (Free)

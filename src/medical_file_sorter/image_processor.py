@@ -112,9 +112,36 @@ class ImageProcessor:
 
         return base64.b64encode(buffer.read()).decode("utf-8")
 
-    def process_pdf(self, file_path: Path) -> Optional[str]:
+    def process_pdf(self, file_path: Path) -> Optional[list[str]]:
         """
-        Convert the first page of a PDF to a Base64 encoded string.
+        Convert all pages of a PDF to Base64 encoded strings.
+
+        Args:
+            file_path: Path to the PDF file.
+
+        Returns:
+            List of Base64 encoded strings (one per page), or None if conversion fails.
+        """
+        try:
+            # Convert all pages
+            images = convert_from_path(file_path)
+            if not images:
+                return None
+
+            result = []
+            for page_image in images:
+                resized = self._resize_image(page_image)
+                result.append(self._image_to_base64(resized))
+            
+            return result
+        except Exception as e:
+            print(f"Warning: Failed to process PDF {file_path.name}: {e}")
+            return None
+
+    def process_pdf_first_page(self, file_path: Path) -> Optional[str]:
+        """
+        Convert only the first page of a PDF to a Base64 encoded string.
+        (Legacy method for backwards compatibility)
 
         Args:
             file_path: Path to the PDF file.
@@ -123,7 +150,6 @@ class ImageProcessor:
             Base64 encoded string of the first page, or None if conversion fails.
         """
         try:
-            # Convert only the first page
             images = convert_from_path(file_path, first_page=1, last_page=1)
             if not images:
                 return None
@@ -153,7 +179,7 @@ class ImageProcessor:
             print(f"Warning: Failed to process image {file_path.name}: {e}")
             return None
 
-    def process_file(self, file_path: Path) -> Optional[str]:
+    def process_file(self, file_path: Path) -> Optional[list[str] | str]:
         """
         Process a file and return its Base64 encoded representation.
 
@@ -161,7 +187,9 @@ class ImageProcessor:
             file_path: Path to the file.
 
         Returns:
-            Base64 encoded string, or None if processing fails.
+            For PDFs: List of Base64 strings (one per page).
+            For images: Single Base64 string.
+            None if processing fails.
         """
         suffix = file_path.suffix.lower()
 
@@ -173,7 +201,7 @@ class ImageProcessor:
             print(f"Warning: Unsupported file type: {file_path.name}")
             return None
 
-    def process_folder(self, folder_path: Path) -> dict[str, str]:
+    def process_folder(self, folder_path: Path) -> dict[str, list[str] | str]:
         """
         Process all valid files in a folder and return their Base64 representations.
 
@@ -181,17 +209,20 @@ class ImageProcessor:
             folder_path: Path to the folder.
 
         Returns:
-            Dictionary mapping filenames to Base64 encoded strings.
+            Dictionary mapping filenames to:
+            - list[str] for PDFs (one base64 per page)
+            - str for images (single base64)
         """
         valid_files = self.get_valid_files(folder_path)
 
         if not valid_files:
             return {}
 
-        results = {}
+        results: dict[str, list[str] | str] = {}
         for file_path in valid_files:
             base64_data = self.process_file(file_path)
             if base64_data:
                 results[file_path.name] = base64_data
 
         return results
+

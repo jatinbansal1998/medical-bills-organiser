@@ -10,10 +10,10 @@ from typing import Any, Optional
 
 from openai import OpenAI
 
-# System prompt for the medical document sorting task
+# System prompt for the medical document sorting task (text-based, Stage 2)
 SYSTEM_PROMPT = """You are a medical administrative assistant specialized in organizing records.
 
-You will receive a set of images representing files from a folder of medical documents. Your task is to:
+You will receive EXTRACTED TEXT CONTENT from medical documents. Your task is to:
 
 1. **Classify** each document as either:
    - "Prescription": Documents containing "Rx", doctor signatures, medical advice, or medication instructions
@@ -254,6 +254,95 @@ class LLMSorter:
             content = response.choices[0].message.content
             if not content:
                 raise ValueError("LLM returned empty content - model may not support vision or the request")
+            
+            result_text = content.strip()
+
+            # Try to parse the JSON response
+            try:
+                result = json.loads(result_text)
+            except json.JSONDecodeError:
+                # Try to extract JSON from markdown code blocks
+                if "```json" in result_text:
+                    json_start = result_text.find("```json") + 7
+                    json_end = result_text.find("```", json_start)
+                    result_text = result_text[json_start:json_end].strip()
+                elif "```" in result_text:
+                    json_start = result_text.find("```") + 3
+                    json_end = result_text.find("```", json_start)
+                    result_text = result_text[json_start:json_end].strip()
+
+                result = json.loads(result_text)
+
+            # Validate the response structure
+            if "groups" not in result:
+                result["groups"] = []
+            if "uncategorized" not in result:
+                result["uncategorized"] = []
+
+            return result
+
+        except Exception as e:
+            raise Exception(f"Failed to sort documents with {self.config.name}: {e}")
+
+    def sort_documents_by_text(self, extracted_content: dict[str, str]) -> dict[str, Any]:
+        """
+        Sort documents using extracted text content (Stage 2 of pipeline).
+
+        Args:
+            extracted_content: Dictionary mapping filenames to extracted text content.
+
+        Returns:
+            Dictionary with 'groups' and 'uncategorized' keys.
+
+        Raises:
+            ValueError: If API returns invalid response.
+            Exception: If API call fails.
+        """
+        if not extracted_content:
+            return {"groups": [], "uncategorized": []}
+
+        # Build the user message with all text content
+        user_message = f"Please analyze and organize these {len(extracted_content)} medical documents based on their extracted text content:\n\n"
+        
+        for filename, text_content in extracted_content.items():
+            user_message += f"=== FILE: {filename} ===\n"
+            # Truncate very long content to avoid token limits
+            if len(text_content) > 5000:
+                user_message += text_content[:5000] + "\n[... content truncated ...]\n"
+            else:
+                user_message += text_content + "\n"
+            user_message += "\n"
+
+        try:
+            # Build messages
+            model_lower = self.model.lower()
+            if "gemma" in model_lower:
+                messages = [{"role": "user", "content": SYSTEM_PROMPT + "\n\n" + user_message}]
+            else:
+                messages = [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ]
+
+            # Build request kwargs
+            request_kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": 4096,
+                "temperature": 0.1,
+            }
+            
+            if self._extra_headers:
+                request_kwargs["extra_headers"] = self._extra_headers
+
+            response = self.client.chat.completions.create(**request_kwargs)
+
+            if not response.choices:
+                raise ValueError("LLM returned no choices")
+            
+            content = response.choices[0].message.content
+            if not content:
+                raise ValueError("LLM returned empty content")
             
             result_text = content.strip()
 

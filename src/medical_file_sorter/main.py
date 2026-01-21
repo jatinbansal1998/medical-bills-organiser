@@ -3,12 +3,15 @@ Main entry point for the Intelligent Medical File Sorter CLI.
 """
 
 import argparse
+import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .content_extractor import ContentExtractor
 from .image_processor import ImageProcessor
 from .llm_sorter import (
     BACKEND_CONFIGS,
@@ -193,6 +196,29 @@ Requirements:
         default=None,
         help="Custom API base URL (overrides backend default)",
     )
+    parser.add_argument(
+        "--vision-model",
+        type=str,
+        default=None,
+        help="Model for Stage 1 content extraction (vision). Uses --model if not specified.",
+    )
+    parser.add_argument(
+        "--sort-model",
+        type=str,
+        default=None,
+        help="Model for Stage 2 document sorting (text). Uses --model if not specified.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Save extracted content and results to debug folder",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="Number of files to process per vision LLM call in Stage 1 (default: 10)",
+    )
 
     args = parser.parse_args()
 
@@ -224,13 +250,25 @@ Requirements:
         print("   Set it in your environment or create a .env file.")
         return 1
 
-    # Determine model
-    model = args.model or backend_config.default_model
+    # Determine models for each stage
+    base_model = args.model or backend_config.default_model
+    vision_model = args.vision_model or base_model
+    sort_model = args.sort_model or base_model
 
     print(f"\n🔍 Scanning folder: {folder_path}")
-    print(f"🤖 Using backend: {backend_config.name} (model: {model})")
+    print(f"🤖 Using backend: {backend_config.name}")
+    print(f"   👁️  Vision model (Stage 1): {vision_model}")
+    print(f"   📋 Sort model (Stage 2): {sort_model}")
 
-    # Step 1: Process files
+    # Setup debug directory if enabled
+    debug_dir = None
+    if args.debug:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        debug_dir = folder_path / ".medical_sorter_debug" / timestamp
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        print(f"   🐛 Debug output: {debug_dir}")
+
+    # Step 1: Process files (convert to images)
     print("\n📸 Step 1: Processing files...")
     processor = ImageProcessor(max_dimension=args.max_dimension)
 
@@ -260,15 +298,57 @@ Requirements:
         print("❌ Error: Failed to process any files.")
         return 1
 
-    print(f"   Successfully processed {len(file_data)} files")
+    # Count total pages
+    total_pages = sum(
+        len(v) if isinstance(v, list) else 1 
+        for v in file_data.values()
+    )
+    print(f"   Successfully processed {len(file_data)} files ({total_pages} total pages)")
 
-    # Step 2: Sort with LLM
-    print(f"\n🤖 Step 2: Analyzing documents with {backend_config.name}...")
+    # Step 2: Extract content with vision model (Stage 1)
+    print(f"\n👁️  Step 2: Extracting content with vision model...")
+    
+    try:
+        # Determine extra headers for OpenRouter
+        extra_headers = {}
+        if backend == LLMBackend.OPENROUTER:
+            extra_headers = {
+                "HTTP-Referer": "https://github.com/medical-file-sorter",
+                "X-Title": "Medical File Sorter"
+            }
+        
+        extractor = ContentExtractor(
+            api_key=api_key,
+            model=vision_model,
+            base_url=args.base_url or backend_config.base_url,
+            extra_headers=extra_headers if extra_headers else None,
+        )
+        
+        extracted_content = extractor.extract_batch(file_data, batch_size=args.batch_size)
+        
+    except Exception as e:
+        print(f"❌ Error during content extraction: {e}")
+        return 1
+
+    if not extracted_content:
+        print("❌ Error: Failed to extract content from any files.")
+        return 1
+
+    print(f"   Extracted content from {len(extracted_content)} files")
+
+    # Save extracted content to debug folder
+    if debug_dir:
+        with open(debug_dir / "extracted_content.json", "w") as f:
+            json.dump(extracted_content, f, indent=2, ensure_ascii=False)
+        print(f"   💾 Saved extracted content to debug folder")
+
+    # Step 3: Sort with LLM using extracted text (Stage 2)
+    print(f"\n📋 Step 3: Sorting documents with text model...")
     
     try:
         sorter = LLMSorter(
             api_key=api_key,
-            model=model,
+            model=sort_model,
             backend=backend,
             base_url=args.base_url,
         )
@@ -277,11 +357,17 @@ Requirements:
         return 1
 
     try:
-        raw_result = sorter.sort_documents(file_data)
+        raw_result = sorter.sort_documents_by_text(extracted_content)
         sort_result = sorter.validate_result(raw_result, set(file_data.keys()))
     except Exception as e:
         print(f"❌ Error: {e}")
         return 1
+
+    # Save sort result to debug folder
+    if debug_dir:
+        with open(debug_dir / "sort_result.json", "w") as f:
+            json.dump(sort_result, f, indent=2, ensure_ascii=False)
+        print(f"   💾 Saved sort result to debug folder")
 
     # Display results
     display_groups(sort_result)
@@ -292,8 +378,8 @@ Requirements:
             print("\n🚫 Operation cancelled. You can manually organize files and try again.")
             return 0
 
-    # Step 3: Merge PDFs
-    print("\n📄 Step 3: Merging documents...")
+    # Step 4: Merge PDFs
+    print("\n📄 Step 4: Merging documents...")
     merger = PDFMerger(output_filename=args.output)
     output_path = merger.merge_documents(folder_path, sort_result)
 

@@ -13,12 +13,16 @@ OS="$(uname -s)"
 
 # Check for Python
 if ! command -v python3 &> /dev/null; then
-    echo "❌ Python 3 is not installed. Please install Python 3.10+ first."
+    echo "❌ Python 3 is not installed. Please install Python 3.12 first."
     exit 1
 fi
 
 PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 echo "✓ Found Python $PYTHON_VERSION"
+if [[ "$PYTHON_VERSION" != "3.12" ]]; then
+    echo "❌ Python 3.12 is required. Found $PYTHON_VERSION."
+    exit 1
+fi
 
 # Check for Homebrew (macOS only)
 if [[ "$OS" == "Darwin" ]]; then
@@ -96,7 +100,7 @@ echo ""
 echo "📦 Configuring Poetry..."
 poetry config virtualenvs.in-project true --local
 
-# Install dependencies
+# Install dependencies (includes PaddleOCR)
 echo ""
 echo "📥 Installing dependencies..."
 poetry install
@@ -117,4 +121,9 @@ echo "  1. Edit .env and configure your LLM backend (OpenRouter, OpenAI, or LM S
 echo "  2. Activate the virtual environment: poetry shell"
 echo "  3. Run the tool: medical-sorter /path/to/documents"
 echo ""
-echo "Or run directly: poetry run medical-sorter /path/to/documents"
+echo "OCR Backends available:"
+echo "  • paddleocr (default) - Fast, free, local OCR"
+echo "  • llm                 - Vision LLM (best for handwriting)"
+echo "  • hybrid              - PaddleOCR + LLM fallback"
+echo ""
+echo "Run: poetry run medical-sorter /path/to/documents"

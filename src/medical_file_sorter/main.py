@@ -12,6 +12,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .content_extractor import ContentExtractor
+from .ocr_factory import OCRBackend, create_extractor, get_ocr_backend_from_string
+from .paddle_ocr_extractor import load_paddleocr_output_dir
 from .image_processor import ImageProcessor
 from .llm_sorter import (
     BACKEND_CONFIGS,
@@ -19,6 +21,7 @@ from .llm_sorter import (
     LLMSorter,
     get_backend_from_string,
     list_backends,
+    parse_bill_amount,
 )
 from .pdf_merger import PDFMerger
 
@@ -44,20 +47,20 @@ def display_groups(sort_result: dict) -> None:
                 files = group.get("files", [])
                 summary = group.get("summary", "")
                 patient_name = group.get("patient_name", "Unknown")
-                bill_amount = group.get("bill_amount", 0)
+                bill_amount = parse_bill_amount(group.get("bill_amount", 0))
             else:
                 files = group
                 summary = ""
                 patient_name = "Unknown"
-                bill_amount = 0
+                bill_amount = 0.0
 
-            total_bill_amount += float(bill_amount) if bill_amount else 0.0
+            total_bill_amount += bill_amount
 
             print(f"\n🗂️  Group {idx} (Transaction):")
             print(f"    👤 Patient: {patient_name}")
             if summary:
                 print(f"    📝 {summary}")
-            if bill_amount and bill_amount > 0:
+            if bill_amount > 0:
                 print(f"    💰 Bill Amount: ₹{bill_amount:,.2f}")
             for filename in files:
                 print(f"    • {filename}")
@@ -136,13 +139,16 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
-  # Using OpenAI (default)
+  # Using OpenRouter (default)
   %(prog)s /path/to/medical/documents
+
+  # LLM image + text pipeline (vision OCR)
+  %(prog)s /path/to/docs --pipeline llm-image-text --vision-model "google/gemma-3-27b-it:free"
 
   # Using LM Studio (local)
   %(prog)s /path/to/docs --backend lmstudio --model "your-local-model"
 
-  # Using OpenRouter  
+  # Using OpenRouter
   %(prog)s /path/to/docs --backend openrouter --model "anthropic/claude-3.5-sonnet"
 
 {list_backends()}
@@ -219,8 +225,64 @@ Requirements:
         default=10,
         help="Number of files to process per vision LLM call in Stage 1 (default: 10)",
     )
+    parser.add_argument(
+        "--pipeline",
+        type=str,
+        choices=["ocr-text", "llm-image-text"],
+        default=None,
+        help=(
+            "Processing pipeline: ocr-text (PaddleOCR + text sorting) or "
+            "llm-image-text (vision OCR + text sorting). Overrides --ocr-backend."
+        ),
+    )
+    parser.add_argument(
+        "--ocr-backend",
+        type=str,
+        default=os.getenv("OCR_BACKEND", "paddleocr"),
+        choices=["paddleocr", "llm", "hybrid"],
+        help=(
+            "OCR backend: paddleocr (fast/free, default), llm (best for handwriting), "
+            "hybrid (auto-fallback). Use --pipeline for a simpler choice."
+        ),
+    )
+    parser.add_argument(
+        "--ocr-confidence-threshold",
+        type=float,
+        default=float(os.getenv("OCR_CONFIDENCE_THRESHOLD", "0.7")),
+        help="Confidence threshold for hybrid mode fallback (0.0-1.0, default: 0.7)",
+    )
+    parser.add_argument(
+        "--ocr-lang",
+        type=str,
+        default=os.getenv("OCR_LANG", "en"),
+        help="Language for PaddleOCR (default: en). See PaddleOCR docs for codes.",
+    )
+    parser.add_argument(
+        "--extract-only",
+        action="store_true",
+        help="Run only OCR extraction and save results to a checkpoint file. Skip sorting and merging.",
+    )
+    parser.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="Path to a previously saved extraction checkpoint JSON file. Skips OCR and uses saved content.",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=None,
+        help="Directory to save extraction checkpoint (default: .medical_sorter_checkpoints in input folder)",
+    )
 
     args = parser.parse_args()
+
+    if args.pipeline:
+        pipeline_map = {
+            "ocr-text": "paddleocr",
+            "llm-image-text": "llm",
+        }
+        args.ocr_backend = pipeline_map[args.pipeline]
 
     # Validate folder path
     folder_path = Path(args.folder_path).expanduser().resolve()
@@ -255,16 +317,37 @@ Requirements:
     vision_model = args.vision_model or base_model
     sort_model = args.sort_model or base_model
 
+    # Parse OCR backend
+    try:
+        ocr_backend = get_ocr_backend_from_string(args.ocr_backend)
+    except ValueError as e:
+        print(f"❌ Error: {e}")
+        return 1
+
+    if ocr_backend == OCRBackend.PADDLEOCR:
+        pipeline_label = "OCR + text (PaddleOCR)"
+    elif ocr_backend == OCRBackend.LLM:
+        pipeline_label = "LLM image + text (vision OCR)"
+    else:
+        pipeline_label = "Hybrid OCR + text (PaddleOCR + LLM fallback)"
+
     print(f"\n🔍 Scanning folder: {folder_path}")
-    print(f"🤖 Using backend: {backend_config.name}")
-    print(f"   👁️  Vision model (Stage 1): {vision_model}")
+    print(f"🧭 Pipeline: {pipeline_label}")
+    print(f"🤖 Using LLM backend: {backend_config.name}")
+    print(f"   📷 OCR backend (Stage 1): {ocr_backend.value}")
+    if ocr_backend == OCRBackend.LLM:
+        print(f"   👁️  Vision model: {vision_model}")
+    elif ocr_backend == OCRBackend.HYBRID:
+        print(f"   👁️  Vision model (fallback): {vision_model}")
+        print(f"   🎚️  Confidence threshold: {args.ocr_confidence_threshold:.0%}")
     print(f"   📋 Sort model (Stage 2): {sort_model}")
+
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Setup debug directory if enabled
     debug_dir = None
     if args.debug:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        debug_dir = folder_path / ".medical_sorter_debug" / timestamp
+        debug_dir = folder_path / ".medical_sorter_debug" / run_timestamp
         debug_dir.mkdir(parents=True, exist_ok=True)
         print(f"   🐛 Debug output: {debug_dir}")
 
@@ -305,39 +388,107 @@ Requirements:
     )
     print(f"   Successfully processed {len(file_data)} files ({total_pages} total pages)")
 
-    # Step 2: Extract content with vision model (Stage 1)
-    print(f"\n👁️  Step 2: Extracting content with vision model...")
-    
-    try:
-        # Determine extra headers for OpenRouter
-        extra_headers = {}
-        if backend == LLMBackend.OPENROUTER:
-            extra_headers = {
-                "HTTP-Referer": "https://github.com/medical-file-sorter",
-                "X-Title": "Medical File Sorter"
-            }
+    # Step 2: Extract content (Stage 1) - or resume from checkpoint
+    if args.resume_from:
+        # Resume from saved checkpoint
+        resume_path = Path(args.resume_from).expanduser().resolve()
+        if not resume_path.exists():
+            print(f"❌ Error: Checkpoint file does not exist: {resume_path}")
+            return 1
         
-        extractor = ContentExtractor(
-            api_key=api_key,
-            model=vision_model,
-            base_url=args.base_url or backend_config.base_url,
-            extra_headers=extra_headers if extra_headers else None,
+        print(f"\n📂 Step 2: Loading extracted content from checkpoint...")
+        print(f"   📄 {resume_path}")
+        
+        try:
+            if resume_path.is_dir():
+                extracted_content = load_paddleocr_output_dir(resume_path)
+            else:
+                with open(resume_path, "r", encoding="utf-8") as f:
+                    extracted_content = json.load(f)
+            if not extracted_content:
+                print("❌ Error: No extracted content found in checkpoint.")
+                return 1
+            print(f"   ✅ Loaded content for {len(extracted_content)} files")
+        except Exception as e:
+            print(f"❌ Error loading checkpoint: {e}")
+            return 1
+    else:
+        # Normal OCR extraction
+        checkpoint_dir = (
+            Path(args.checkpoint_dir)
+            if args.checkpoint_dir
+            else folder_path / ".medical_sorter_checkpoints"
         )
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        ocr_output_dir = None
+        if ocr_backend in {OCRBackend.PADDLEOCR, OCRBackend.HYBRID}:
+            ocr_output_dir = checkpoint_dir / f"paddleocr_output_{run_timestamp}"
+            ocr_output_dir.mkdir(parents=True, exist_ok=True)
+            print(f"   🧾 OCR outputs: {ocr_output_dir}")
+
+        ocr_label = {
+            OCRBackend.PADDLEOCR: "PaddleOCR",
+            OCRBackend.LLM: "vision model",
+            OCRBackend.HYBRID: "hybrid (PaddleOCR + LLM fallback)",
+        }[ocr_backend]
+        print(f"\n👁️  Step 2: Extracting content with {ocr_label}...")
         
-        extracted_content = extractor.extract_batch(file_data, batch_size=args.batch_size)
+        try:
+            # Determine extra headers for OpenRouter (used for LLM and hybrid modes)
+            extra_headers = {}
+            if backend == LLMBackend.OPENROUTER:
+                extra_headers = {
+                    "HTTP-Referer": "https://github.com/medical-file-sorter",
+                    "X-Title": "Medical File Sorter"
+                }
+            
+            # Create the appropriate extractor based on OCR backend
+            extractor = create_extractor(
+                backend=ocr_backend,
+                # PaddleOCR config
+                paddle_lang=args.ocr_lang,
+                paddle_use_gpu=False,
+                # LLM config (for llm and hybrid modes)
+                llm_api_key=api_key,
+                llm_model=vision_model,
+                llm_base_url=args.base_url or backend_config.base_url,
+                llm_extra_headers=extra_headers if extra_headers else None,
+                # Hybrid config
+                confidence_threshold=args.ocr_confidence_threshold,
+            )
+            
+            extract_kwargs = {"batch_size": args.batch_size}
+            if ocr_output_dir:
+                extract_kwargs["output_dir"] = ocr_output_dir
+            extracted_content = extractor.extract_batch(file_data, **extract_kwargs)
+            
+        except Exception as e:
+            print(f"❌ Error during content extraction: {e}")
+            return 1
+
+        if not extracted_content:
+            print("❌ Error: Failed to extract content from any files.")
+            return 1
+
+        print(f"   Extracted content from {len(extracted_content)} files")
+
+        # Save checkpoint
+        checkpoint_path = checkpoint_dir / f"extracted_content_{run_timestamp}.json"
         
-    except Exception as e:
-        print(f"❌ Error during content extraction: {e}")
-        return 1
+        with open(checkpoint_path, "w", encoding="utf-8") as f:
+            json.dump(extracted_content, f, indent=2, ensure_ascii=False)
+        print(f"   💾 Saved checkpoint: {checkpoint_path}")
 
-    if not extracted_content:
-        print("❌ Error: Failed to extract content from any files.")
-        return 1
+        # If extract-only mode, exit here
+        if args.extract_only:
+            print(f"\n✅ Extraction complete! Checkpoint saved to:")
+            print(f"   {checkpoint_path}")
+            print(f"\n   To continue processing, run:")
+            print(f"   poetry run medical-sorter \"{folder_path}\" --resume-from \"{checkpoint_path}\"")
+            return 0
 
-    print(f"   Extracted content from {len(extracted_content)} files")
-
-    # Save extracted content to debug folder
-    if debug_dir:
+    # Save extracted content to debug folder (if not resuming)
+    if debug_dir and not args.resume_from:
         with open(debug_dir / "extracted_content.json", "w") as f:
             json.dump(extracted_content, f, indent=2, ensure_ascii=False)
         print(f"   💾 Saved extracted content to debug folder")

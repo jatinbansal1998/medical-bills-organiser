@@ -9,10 +9,13 @@ A Python-based CLI tool for macOS that ingests a folder of disorganized medical 
 - 🔗 **Smart matching**: Links prescriptions with related bills based on content (medicines, doctor names)
 - 📑 **PDF merging**: Combines all documents into a single organized PDF
 - ✅ **User confirmation**: Review the AI's grouping before merging
+- ⚡ **Multiple OCR backends**: Choose between PaddleOCR (fast/free), Vision LLM (best for handwriting), or Hybrid mode
 
 ## Quick Setup
 
 The easiest way to get started is to run the setup script:
+
+Requires Python 3.12.
 
 ```bash
 # Clone the repository
@@ -46,7 +49,7 @@ pipx install poetry
 ### 2. Project Setup
 
 ```bash
-# Install Python dependencies
+# Install Python dependencies (includes PaddleOCR)
 poetry install
 
 # Copy environment template
@@ -59,8 +62,14 @@ poetry shell
 ## Usage
 
 ```bash
-# Basic usage
+# Basic usage (OCR + text pipeline with PaddleOCR)
 python -m medical_file_sorter.main /path/to/medical/documents
+
+# Use LLM image + text pipeline (vision OCR)
+python -m medical_file_sorter.main ~/Documents/medical_files --pipeline llm-image-text
+
+# Use Hybrid mode (PaddleOCR with LLM fallback for handwriting)
+python -m medical_file_sorter.main ~/Documents/medical_files --ocr-backend hybrid
 
 # With options
 python -m medical_file_sorter.main ~/Documents/medical_files \
@@ -79,6 +88,24 @@ python -m medical_file_sorter.main /path/to/docs --yes
 | `--output` | `-o` | `Merged_Medical_Records.pdf` | Output filename |
 | `--max-dimension` | `-m` | `1000` | Maximum image dimension for processing |
 | `--yes` | `-y` | `False` | Skip confirmation prompt |
+| `--pipeline` | - | - | Pipeline: `ocr-text` (PaddleOCR) or `llm-image-text` (vision OCR). Overrides `--ocr-backend`. |
+| `--ocr-backend` | - | `paddleocr` | OCR backend: `paddleocr`, `llm`, `hybrid` |
+| `--ocr-confidence-threshold` | - | `0.7` | Confidence threshold for hybrid mode (0.0-1.0) |
+| `--ocr-lang` | - | `en` | Language for PaddleOCR |
+
+## OCR Backends
+
+Choose the best OCR backend for your documents:
+
+| Backend | Speed | Cost | Handwriting | Best For |
+|---------|-------|------|-------------|----------|
+| `llm` | Slower | API costs | ✅ Excellent | Handwritten prescriptions |
+| `paddleocr` | Fast | Free | ⚠️ Limited | Typed/printed documents |
+| `hybrid` | Medium | Minimal | ✅ Good | Mixed documents |
+
+Use `--pipeline ocr-text` (default) for PaddleOCR + text sorting, or `--pipeline llm-image-text` for vision OCR + text sorting. **Hybrid mode** uses PaddleOCR first, then automatically falls back to Vision LLM for pages with low OCR confidence (e.g., handwritten text).
+
+Reference: [PaddleOCR GitHub](https://github.com/PaddlePaddle/PaddleOCR)
 
 ## How It Works
 
@@ -97,10 +124,13 @@ medical-bills-organiser/
 ├── src/
 │   └── medical_file_sorter/
 │       ├── __init__.py
-│       ├── main.py              # CLI entry point
-│       ├── image_processor.py   # File → Base64 conversion
-│       ├── llm_sorter.py        # GPT-4o classification logic
-│       └── pdf_merger.py        # PDF merging logic
+│       ├── main.py                # CLI entry point
+│       ├── image_processor.py     # File → Base64 conversion
+│       ├── content_extractor.py   # LLM-based OCR
+│       ├── paddle_ocr_extractor.py # PaddleOCR-based extraction
+│       ├── ocr_factory.py         # OCR backend factory
+│       ├── llm_sorter.py          # Document classification logic
+│       └── pdf_merger.py          # PDF merging logic
 ├── pyproject.toml
 ├── .env.example
 ├── .gitignore

@@ -219,7 +219,10 @@ class ContentExtractor:
         return result.get(filename, "")
 
     def extract_batch(
-        self, file_data: dict[str, list[str] | str], batch_size: int = 10
+        self,
+        file_data: dict[str, list[str] | str],
+        batch_size: int = 10,
+        **_: Any,
     ) -> dict[str, str]:
         """
         Extract text content from multiple files using batch processing.

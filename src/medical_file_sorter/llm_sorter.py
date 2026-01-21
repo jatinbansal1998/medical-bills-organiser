@@ -4,6 +4,7 @@ Supports multiple backends: OpenAI, OpenRouter (cloud), and LM Studio (local).
 """
 
 import json
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
@@ -67,6 +68,36 @@ Return your response in this exact JSON format:
     ],
     "uncategorized": ["unknown1.pdf", "unclear_document.jpg"]
 }"""
+
+_BILL_AMOUNT_CLEAN_RE = re.compile(r"[^\d.\-]")
+
+
+def parse_bill_amount(value: Any) -> float:
+    """
+    Parse bill amount from LLM output safely.
+
+    Args:
+        value: Raw bill amount (number or string with currency/commas).
+
+    Returns:
+        Parsed float value, or 0.0 if invalid.
+    """
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = _BILL_AMOUNT_CLEAN_RE.sub("", value).strip()
+        if cleaned in {"", "-", ".", "-."}:
+            return 0.0
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class LLMBackend(Enum):
@@ -403,6 +434,7 @@ class LLMSorter:
                 bill_amount = 0
 
             valid_files = []
+            parsed_bill_amount = parse_bill_amount(bill_amount)
             for filename in files:
                 if filename in known_files:
                     valid_files.append(filename)
@@ -414,7 +446,7 @@ class LLMSorter:
                     "files": valid_files,
                     "summary": summary,
                     "patient_name": patient_name,
-                    "bill_amount": float(bill_amount) if bill_amount else 0.0
+                    "bill_amount": parsed_bill_amount
                 })
 
         validated_uncategorized = []

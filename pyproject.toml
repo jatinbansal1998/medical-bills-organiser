@@ -3,23 +3,25 @@ name = "medical-file-sorter"
 version = "0.1.0"
 description = "Intelligent Medical File Sorter CLI - Organizes medical documents using Multimodal LLM"
 authors = [
-    {name = "Developer"}
+    {name = "Jatin Bansal"}
 ]
-requires-python = "^3.10"
+requires-python = "==3.12.*"
 dependencies = [
     "openai (>=2.15.0,<3.0.0)",
     "pypdf (>=6.6.0,<7.0.0)",
     "pdf2image (>=1.17.0,<2.0.0)",
     "pillow (>=12.1.0,<13.0.0)",
     "python-dotenv (>=1.2.1,<2.0.0)",
-    "pillow-heif (>=1.1.1,<2.0.0)"
+    "pillow-heif (>=1.1.1,<2.0.0)",
+    "paddlepaddle>=3.3.0",
+    "paddleocr>=3.3.3"
 ]
 
-
 [tool.poetry]
+extras = { paddleocr = ["paddlepaddle", "paddleocr"] }
 packages = [{include = "medical_file_sorter", from = "src"}]
 
-[tool.poetry.scripts]
+[project.scripts]
 medical-sorter = "medical_file_sorter.main:main"
 
 [build-system]

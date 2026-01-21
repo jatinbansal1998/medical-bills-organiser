@@ -73,6 +73,17 @@ venv.bak/
 
 # Output files
 Merged_Medical_Records.pdf
+output*/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.tif
+*.webp
+*.svg
+*.txt
 
 # Poetry
 poetry.toml

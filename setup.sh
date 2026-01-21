@@ -11,19 +11,6 @@ echo ""
 # Detect OS
 OS="$(uname -s)"
 
-# Check for Python
-if ! command -v python3 &> /dev/null; then
-    echo "❌ Python 3 is not installed. Please install Python 3.12 first."
-    exit 1
-fi
-
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-echo "✓ Found Python $PYTHON_VERSION"
-if [[ "$PYTHON_VERSION" != "3.12" ]]; then
-    echo "❌ Python 3.12 is required. Found $PYTHON_VERSION."
-    exit 1
-fi
-
 # Check for Homebrew (macOS only)
 if [[ "$OS" == "Darwin" ]]; then
     if ! command -v brew &> /dev/null; then
@@ -40,6 +27,30 @@ if [[ "$OS" == "Darwin" ]]; then
         echo "✓ Found Homebrew"
     fi
 fi
+
+# Check for uv, install if missing
+if ! command -v uv &> /dev/null; then
+    echo ""
+    echo "📦 uv is not installed."
+    if [[ "$OS" == "Darwin" ]] && command -v brew &> /dev/null; then
+        echo "   Installing uv via Homebrew..."
+        brew install uv
+        echo "✓ Installed uv"
+    else
+        echo "   Installing uv via curl..."
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "✓ Installed uv"
+    fi
+else
+    echo "✓ Found uv"
+fi
+
+# Create virtual environment with Python 3.12 using uv
+echo ""
+echo "🐍 Setting up Python 3.12 environment..."
+uv venv --python 3.12 --clear
+source .venv/bin/activate
+echo "✓ Virtual environment created with $(python3 --version)"
 
 # Check for pipx, install if missing (macOS)
 if ! command -v pipx &> /dev/null; then
